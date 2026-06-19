@@ -1,0 +1,21 @@
+# Binaries
+/app
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries / coverage
+*.test
+*.out
+coverage.txt
+
+# Go workspace / vendor
+/vendor/
+go.work
+go.work.sum
+
+# Editor / OS cruft
+.idea/
+.vscode/
+.DS_Store
