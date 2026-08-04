@@ -1,6 +1,26 @@
+# VCS, docs and platform metadata — not needed inside the build context.
 .git
 .gitignore
 .dockerignore
 Dockerfile
 README.md
-*_test.go
+.onklave/
+
+# Tests are not run during the image build (any directory, not just the root).
+**/*_test.go
+
+# Locally built binaries — never ship a host-built artifact into the image.
+/app
+/template-container
+*.exe
+
+# Secrets must never enter the build context. Anything copied in stays
+# recoverable from the image layers even if a later step deletes it.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+service-account*.json

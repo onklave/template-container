@@ -37,10 +37,21 @@ func newServer(addr string) *http.Server {
 	mux.HandleFunc("/healthz", healthzHandler)
 	mux.HandleFunc("/", rootHandler)
 
+	// Timeouts are deliberate, not optional. A Go http.Server left with the
+	// zero value for these fields never times out a connection, which is
+	// exactly what slowloris-style attacks rely on. If you add streaming,
+	// long-polling or upload endpoints, raise WriteTimeout/ReadTimeout (or
+	// set them to 0 and apply per-request deadlines) rather than deleting them.
 	return &http.Server{
 		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		// Default is 1 MB; 64 KiB is plenty for normal traffic and bounds
+		// per-connection memory under header-flood attempts.
+		MaxHeaderBytes: 1 << 16,
 	}
 }
 

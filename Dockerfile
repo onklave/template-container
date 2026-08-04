@@ -5,8 +5,10 @@ FROM golang:1.26-alpine AS build
 
 WORKDIR /src
 
-# Cache module downloads when only sources change.
-COPY go.mod ./
+# Cache module downloads when only sources change. go.sum is matched by a glob
+# so this keeps working both now (no dependencies, no go.sum) and as soon as you
+# add one — without a go.sum in the build context the build would fail.
+COPY go.mod go.sum* ./
 RUN go mod download
 
 COPY . .

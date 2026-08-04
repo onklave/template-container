@@ -58,6 +58,28 @@ func TestRootHandlerNotFound(t *testing.T) {
 	}
 }
 
+// TestNewServerHasTimeouts guards the hardening in newServer: an http.Server
+// with zero-value timeouts holds connections open indefinitely (slowloris).
+func TestNewServerHasTimeouts(t *testing.T) {
+	srv := newServer(":8080")
+
+	if srv.ReadHeaderTimeout == 0 {
+		t.Error("ReadHeaderTimeout must be set")
+	}
+	if srv.ReadTimeout == 0 {
+		t.Error("ReadTimeout must be set")
+	}
+	if srv.WriteTimeout == 0 {
+		t.Error("WriteTimeout must be set")
+	}
+	if srv.IdleTimeout == 0 {
+		t.Error("IdleTimeout must be set")
+	}
+	if srv.MaxHeaderBytes == 0 {
+		t.Error("MaxHeaderBytes must be set")
+	}
+}
+
 func TestRunHealthCheck(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(healthzHandler))
 	defer srv.Close()
