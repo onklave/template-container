@@ -51,9 +51,16 @@ i.e. the same toolchain the Dockerfile builds with. Commands are recorded as run
 | Slowloris probe | raw socket, partial headers, never terminated | Connection closed by server after 5.0s — `ReadHeaderTimeout` enforced |
 | Graceful shutdown | `docker stop -t 15` | `shutting down` → `stopped`, exit code 0 |
 | Secret scan | `git grep -E '<credential patterns>' $(git rev-list --all)` | No matches across all history |
+| GODEBUG baseline (directive `1.25`) | `go version -m /out/app` | `build DefaultGODEBUG=cryptocustomrand=1,tlssecpmlkem=0,urlstrictcolons=0` |
+| GODEBUG baseline (directive `1.26`) | `go version -m /out/app` | **No `DefaultGODEBUG` line** — binary runs on 1.26 defaults |
+| Vet / test / build (after raising to `1.26`) | `go vet ./...`, `go test ./...`, `go build ./...` | Pass — exit 0, `ok github.com/onklave/template-container 0.003s` |
 
 `govulncheck` was installed with `go install golang.org/x/vuln/cmd/govulncheck@latest`
 inside the build container; it installed and ran cleanly.
+
+The last three rows are from the **cross-template reconciliation pass** (2026-08-04,
+same audit date): seven templates were audited independently and made inconsistent
+choices, which were then reconciled. See finding 9.
 
 ## Dependency status
 **Third-party dependencies: none.** `go.mod` has no `require` block and the service
@@ -64,7 +71,7 @@ images plus the Go standard library.
 
 | Item | Before | After | Note |
 |---|---|---|---|
-| `go` directive in `go.mod` | `go 1.22` | `go 1.25` | Go 1.22 is end-of-life and unsupported |
+| `go` directive in `go.mod` | `go 1.22` | `go 1.26` | Go 1.22 is end-of-life; `1.26` matches the builder (see below) |
 | Build image | `golang:1.26-alpine` | `golang:1.26-alpine` (unchanged) | Already current — resolves to go1.26.5 |
 | Runtime image | `gcr.io/distroless/static:nonroot` | unchanged | Already current — re-pulled, `uid 65532` |
 | Go stdlib (via builder) | go1.26.5 | go1.26.5 | Clean under govulncheck |
@@ -75,15 +82,32 @@ so nothing ever forced the two to agree. Raising the directive is safe here beca
 the module has zero dependencies and uses only long-stable stdlib APIs, so there is
 no transitive constraint to satisfy.
 
-Raised to **1.25 rather than 1.26 deliberately.** Go supports the two most recent
-majors (currently 1.26 and 1.25), and since Go 1.21 the `go` directive is a hard
-*minimum*. Setting it to `1.25` states the supported floor: it is satisfied by the
-1.26 builder the image actually uses, while still building for a developer on 1.25
-with `GOTOOLCHAIN=local` (verified above). Pinning the directive to `1.26` would
-force a toolchain download — or a hard failure under `GOTOOLCHAIN=local` — for
-anyone on the older supported release, with no benefit to a dependency-free module.
-The Dockerfile intentionally stays on the latest release so shipped binaries carry
-the newest stdlib patches.
+Initially raised to **1.25 rather than 1.26**, on the reasoning that the directive is
+a hard *minimum* and `1.25` states the supported floor: satisfied by the 1.26 builder
+the image actually uses, while still building for a developer on 1.25 with
+`GOTOOLCHAIN=local` (verified above). Pinning to `1.26` costs those developers a
+toolchain download — or a hard failure under `GOTOOLCHAIN=local`.
+
+**Superseded — raised again to `1.26` in the reconciliation pass.** That reasoning
+treated the directive as *only* a language floor, which is the part it got wrong: the
+directive also fixes the GODEBUG compatibility baseline compiled into the binary, so a
+directive behind the builder silently bakes in opt-outs from the newer release's
+hardening defaults. Measured directly on this module by diffing `go version -m` across
+the two directives (both built in `golang:1.26-alpine`, go1.26.5):
+
+| GODEBUG baked in at `go 1.25` | Effect of the opt-out |
+|---|---|
+| `cryptocustomrand=1` | Honours a caller-replaced `crypto/rand.Reader` instead of always using the OS CSPRNG |
+| `tlssecpmlkem=0` | Disables the hybrid post-quantum TLS key exchange, leaving sessions harvest-now-decrypt-later exposed |
+| `urlstrictcolons=0` | Keeps the lax URL colon parsing, the classic source of parser-differential bugs between proxy and app |
+
+At `go 1.26` the `DefaultGODEBUG` line disappears from the binary entirely — it runs on
+1.26 defaults. The cost is real but small and one-sided: a developer pinned to a 1.25
+toolchain with `GOTOOLCHAIN=local` must upgrade. Every *shipped* binary is built by the
+1.26 builder either way, so the directive was buying compatibility for local builds at
+the price of weaker crypto defaults in production. `template-go-web-service` and
+`template-static-site` had already chosen `1.26`; this also makes three of three Go
+templates agree.
 
 **Not upgraded, deliberately:** Go 1.27 (only `go1.27rc2` exists as of this audit —
 no stable release; `golang:1.27-alpine` is not published). Revisit at the next review.
@@ -97,7 +121,10 @@ no stable release; `golang:1.27-alpine` is not published). Revisit at the next r
    were never actually built with 1.22 — but any developer or agent building
    locally with a 1.22 toolchain installed would have satisfied the directive and
    produced a binary against an unpatched stdlib. **Action taken:** raised to
-   `go 1.25` (rationale above); re-verified on both 1.25 and 1.26.
+   `go 1.25`, then to `go 1.26` in the reconciliation pass once the directive's
+   effect on the GODEBUG hardening baseline was measured (rationale and evidence
+   above, and finding 9). Re-verified under 1.26; the `1.25`-floor claim no longer
+   holds and `GOTOOLCHAIN=local` on 1.25 will now refuse to build.
 
 2. **(medium) HTTP server had only one of five relevant timeouts set.** Only
    `ReadHeaderTimeout` was configured. `ReadTimeout`, `WriteTimeout` and
@@ -159,9 +186,26 @@ no stable release; `golang:1.27-alpine` is not published). Revisit at the next r
    writes nothing to disk. SIGTERM triggers a clean 10s-budget graceful shutdown,
    exit code 0.
 
+9. **(medium) `go` directive trailed the builder, weakening the binary's GODEBUG
+   defaults — FIXED in the cross-template reconciliation pass.** Seven templates were
+   audited independently on 2026-08-04 and reached different conclusions about the
+   same question; this template landed on `go 1.25` while `template-go-web-service`
+   and `template-static-site` landed on `1.26`. Shipping the same starter code with
+   different security postures is itself the defect. On the merits the `1.26` side is
+   right: the directive is not only a language floor, it fixes the GODEBUG
+   compatibility baseline compiled into the binary, so trailing the builder bakes in
+   opt-outs from newer hardening defaults (`cryptocustomrand=1`, `tlssecpmlkem=0`,
+   `urlstrictcolons=0` — table above). **Action taken:** raised to `go 1.26`, verified
+   by diffing `go version -m` before and after (the `DefaultGODEBUG` line disappears),
+   with `go vet`/`go test`/`go build` green after the change. Accepted cost: a
+   developer on a 1.25 toolchain with `GOTOOLCHAIN=local` must now upgrade.
+
 ## Changes made in this audit
-- `go.mod`: raised the `go` directive from `1.22` to `1.25`, ending the go.mod ↔
-  Dockerfile drift and leaving the end-of-life 1.22 floor behind.
+- `go.mod`: raised the `go` directive from `1.22` to `1.25`, and then to `1.26` in the
+  reconciliation pass (finding 9) — ending the go.mod ↔ Dockerfile drift, leaving the
+  end-of-life 1.22 floor behind, and dropping the `DefaultGODEBUG` hardening opt-outs
+  that a trailing directive compiles into the binary. Added a comment naming the
+  Dockerfile builder as the source of truth, matching `template-static-site`.
 - `main.go`: added `ReadTimeout`, `WriteTimeout`, `IdleTimeout` and
   `MaxHeaderBytes` to the `http.Server`, with a comment on how to adapt them for
   streaming workloads.
@@ -172,8 +216,10 @@ no stable release; `golang:1.27-alpine` is not published). Revisit at the next r
   `*.p12`, `*.pfx`, `credentials.json`, `service-account*.json`), locally built
   binaries and `.onklave/`; corrected `*_test.go` to `**/*_test.go`.
 - `.gitignore`: added `/template-container`.
-- `README.md`: corrected the stale `golang:1.22-alpine` claim to `golang:1.26-alpine`
-  and noted the `go 1.25` floor and the absence of third-party dependencies.
+- `README.md`: corrected the stale `golang:1.22-alpine` claim to `golang:1.26-alpine`,
+  and described the `go.mod` row as declaring `go 1.26` to match the builder — noting
+  that the directive sets the binary's GODEBUG hardening baseline — plus the absence
+  of third-party dependencies.
 - Added this file.
 
 `onklave.yaml` was not modified.
@@ -185,9 +231,10 @@ no stable release; `golang:1.27-alpine` is not published). Revisit at the next r
    off with something to bump the digests. Worth doing as one change alongside
    whatever image-update automation the platform adopts for templates — pinning
    without it just guarantees staleness.
-2. **Go 1.27 is at rc2.** Once it goes stable and `golang:1.27-alpine` is
-   published, bump the Dockerfile builder and consider moving the `go` directive to
-   `1.26` (keeping the floor one release behind the builder, as now).
+2. **Go 1.27 is at rc2.** Once it goes stable and `golang:1.27-alpine` is published,
+   bump the Dockerfile builder **and the `go` directive together** — the directive now
+   tracks the builder rather than trailing it (finding 9), and the same move is due in
+   `template-go-web-service` and `template-static-site` so the three stay aligned.
 3. **No automated recheck exists for this template.** This audit was manual and the
    CI workflow was intentionally removed, so nothing will notice the next stdlib
    CVE or EOL toolchain. Consider a scheduled platform-side job that runs
@@ -196,4 +243,9 @@ no stable release; `golang:1.27-alpine` is not published). Revisit at the next r
 4. **Confirm the timeout values suit real generated apps.** 15s read/write is right
    for a JSON API and wrong for file uploads or SSE. If common Onklave workloads
    skew long-lived, revisit the defaults in `newServer` so customers are not forced
-   to edit them immediately.
+   to edit them immediately. Note the reconciliation pass deliberately kept
+   `WriteTimeout` **here and in `template-go-web-service`** while leaving it off the
+   two static-file servers (`template-static-site`, `template-3d-web-app`): a JSON API
+   can bound its response writes, a file server serving large assets to a slow client
+   cannot without truncating legitimate downloads. That split is intentional, not
+   drift — do not "harmonise" it away.

@@ -23,7 +23,7 @@ As long as those hold, swap in any language, framework, or base image you like.
 | `main.go`       | stdlib `net/http` server: `GET /` greeting, `GET /healthz` → `200 ok`, graceful shutdown on SIGTERM/SIGINT. |
 | `main_test.go`  | Handler + healthcheck tests.                                            |
 | `Dockerfile`    | Multi-stage build: static binary in `golang:1.26-alpine`, final `gcr.io/distroless/static:nonroot` image running as a non-root user, with `EXPOSE 8080` and a `HEALTHCHECK`. |
-| `go.mod`        | Go module definition. Declares `go 1.25` (the supported floor); the image builds with Go 1.26. No third-party dependencies. |
+| `go.mod`        | Go module definition. Declares `go 1.26`, matching the `golang:1.26-alpine` builder — the directive sets the GODEBUG hardening baseline compiled into the binary, so it tracks the builder rather than trailing it. No third-party dependencies. |
 | `.dockerignore` | Keeps the build context small.                                          |
 | `.gitignore`    | Standard Go ignores.                                                    |
 
