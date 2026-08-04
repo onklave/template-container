@@ -8,9 +8,10 @@ The example here is a tiny self-contained Go HTTP service, chosen only because i
 
 Onklave builds and runs your container from the repository itself. Whatever stack you bring, keep these three things true:
 
-1. **A `Dockerfile` at the repository root.** Onklave builds your image from it — there is no separate build configuration.
-2. **The service listens on port `8080`.** Honour the `PORT` environment variable if set, but default to `8080`. Onklave serves your app on port 8080.
-3. **`GET /healthz` returns `200`.** Used for liveness/readiness probes.
+1. **An `onklave.yaml` at the repository root.** This is the only file the platform reads to learn what to build, which port to serve, which health path to probe and which route to expose. GitHub Actions is not used — the platform builds, tests and deploys the repo itself. To add a second service, add another entry under `services`.
+2. **A `Dockerfile` at the repository root.** Onklave builds your image from it, using the `build.context` and `build.dockerfile` declared in `onklave.yaml`.
+3. **The service listens on port `8080`.** Honour the `PORT` environment variable if set, but default to `8080` — the value declared as `runtime.port`.
+4. **`GET /healthz` returns `200`.** Declared as `runtime.healthPath`; used for liveness/readiness probes.
 
 As long as those hold, swap in any language, framework, or base image you like.
 
@@ -18,6 +19,7 @@ As long as those hold, swap in any language, framework, or base image you like.
 
 | File            | Purpose                                                                 |
 | --------------- | ----------------------------------------------------------------------- |
+| `onklave.yaml`  | Build/run manifest the platform reads: build context, port, health path, exposed route. |
 | `main.go`       | stdlib `net/http` server: `GET /` greeting, `GET /healthz` → `200 ok`, graceful shutdown on SIGTERM/SIGINT. |
 | `main_test.go`  | Handler + healthcheck tests.                                            |
 | `Dockerfile`    | Multi-stage build: static binary in `golang:1.22-alpine`, final `gcr.io/distroless/static:nonroot` image running as a non-root user, with `EXPOSE 8080` and a `HEALTHCHECK`. |
